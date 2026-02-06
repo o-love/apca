@@ -20,6 +20,9 @@ use http_endpoint::Endpoint;
 use hyper::body::Bytes;
 use hyper::body::Incoming;
 use hyper::Error as HyperError;
+#[cfg(feature = "tls-rustls")]
+use hyper_rustls::HttpsConnectorBuilder;
+#[cfg(feature = "tls-native")]
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Builder as HttpClientBuilder;
@@ -44,7 +47,6 @@ use crate::error::RequestError;
 use crate::subscribable::Subscribable;
 use crate::Error;
 
-
 /// A type providing a debug representation of HTTP headers, with
 /// sensitive data being masked out.
 struct DebugHeaders<'h> {
@@ -66,7 +68,6 @@ impl Debug for DebugHeaders<'_> {
       .finish()
   }
 }
-
 
 /// A type providing a debug representation of an HTTP request, with
 /// sensitive data being masked out.
@@ -92,12 +93,30 @@ impl Debug for DebugRequest<'_> {
   }
 }
 
-
 /// Emit a debug representation of an HTTP request.
 fn debug_request(request: &Request<Full<Bytes>>) -> DebugValue<DebugRequest<'_>> {
   debug(DebugRequest { request })
 }
 
+#[cfg(feature = "tls-native")]
+type HttpsConnectorType = HttpsConnector<HttpConnector>;
+
+#[cfg(feature = "tls-rustls")]
+type HttpsConnectorType = hyper_rustls::HttpsConnector<HttpConnector>;
+
+#[cfg(feature = "tls-native")]
+fn https_connector() -> HttpsConnectorType {
+  HttpsConnector::new()
+}
+
+#[cfg(feature = "tls-rustls")]
+fn https_connector() -> HttpsConnectorType {
+  HttpsConnectorBuilder::new()
+    .with_webpki_roots()
+    .https_or_http()
+    .enable_http1()
+    .build()
+}
 
 /// A builder for creating customized `Client` objects.
 #[derive(Debug)]
@@ -115,7 +134,7 @@ impl Builder {
 
   /// Build the final `Client` object.
   pub fn build(&self, api_info: ApiInfo) -> Client {
-    let https = HttpsConnector::new();
+    let https = https_connector();
     let client = self.builder.build(https);
 
     Client { api_info, client }
@@ -148,13 +167,12 @@ impl Default for Builder {
   }
 }
 
-
 /// A `Client` is the entity used by clients of this module for
 /// interacting with the Alpaca API.
 #[derive(Debug)]
 pub struct Client {
   api_info: ApiInfo,
-  client: HttpClient<HttpsConnector<HttpConnector>, Full<Bytes>>,
+  client: HttpClient<HttpsConnectorType, Full<Bytes>>,
 }
 
 impl Client {
@@ -210,7 +228,6 @@ impl Client {
       .header(HDR_KEY_ID, self.api_info.key_id.as_str())
       .header(HDR_SECRET, self.api_info.secret.as_str())
       .body(Full::new(body))?;
-
 
     Self::maybe_add_gzip_header(&mut request);
     Ok(request)
@@ -336,7 +353,6 @@ impl Client {
   }
 }
 
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -348,7 +364,6 @@ mod tests {
   use crate::endpoint::ApiError;
   use crate::Str;
 
-
   Endpoint! {
     GetNotFound(()),
     Ok => (), [],
@@ -358,7 +373,6 @@ mod tests {
       "/v2/foobarbaz".into()
     }
   }
-
 
   /// Check that we can retrieve the `ApiInfo` object used by a client.
   #[test]

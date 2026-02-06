@@ -86,6 +86,12 @@
 //! # })
 //! ```
 
+#[cfg(all(feature = "tls-native", feature = "tls-rustls"))]
+compile_error!("features \"tls-native\" and \"tls-rustls\" are mutually exclusive");
+
+#[cfg(not(any(feature = "tls-native", feature = "tls-rustls")))]
+compile_error!("one of \"tls-native\" or \"tls-rustls\" must be enabled");
+
 #[macro_use]
 extern crate http_endpoint;
 

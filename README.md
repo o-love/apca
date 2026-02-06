@@ -57,6 +57,32 @@ The returned `order` object can subsequently be inspected to find out
 details about the order (such as its ID). The full example is available
 [here][example-order].
 
+Features
+--------
+
+- `gzip` (default) enables transparent gzip response decoding
+- `tls-native` (default) uses native system TLS (OpenSSL on many platforms)
+- `tls-rustls` uses a pure Rust TLS stack with `webpki-roots`
+- `vendored-openssl` builds with vendored OpenSSL (implies `tls-native`)
+
+To pick a TLS backend explicitly, disable default features and enable
+the desired TLS feature:
+
+```toml
+[dependencies]
+apca = { version = "0.30", default-features = false, features = ["tls-rustls", "gzip"] }
+```
+
+```toml
+[dependencies]
+apca = { version = "0.30", default-features = false, features = ["tls-native", "gzip"] }
+```
+
+```toml
+[dependencies]
+apca = { version = "0.30", default-features = false, features = ["vendored-openssl", "gzip"] }
+```
+
 Please refer to the full [documentation][docs-rs] for more details.
 
 
