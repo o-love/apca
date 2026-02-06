@@ -22,7 +22,7 @@ A crate for interacting with the Alpaca API.
 include = ["src/**/*", "LICENSE", "README.*", "CHANGELOG.*"]
 
 [features]
-default = ["gzip", "tls-native"]
+default = ["gzip", "tls-rustls"]
 gzip = ["async-compression/futures-io", "async-compression/gzip"]
 tls-native = ["hyper-tls", "tungstenite/native-tls", "_openssl_unused"]
 tls-rustls = ["hyper-rustls", "tungstenite/rustls-tls-webpki-roots"]

@@ -822,7 +822,13 @@ where
         url.set_path(&format!("v2/{}", component));
         url
       },
-      SourceVariant::Url(url) => Url::parse(&url)?,
+      SourceVariant::Url(url) => {
+        let url = Url::parse(&url)?;
+        if url.scheme() != "wss" {
+          return Err(Error::Str("data stream URL must use wss scheme".into()));
+        }
+        url
+      },
     };
 
     let stream = Unfold::new(

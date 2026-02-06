@@ -6,6 +6,8 @@ use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::fmt::Result as FmtResult;
 use std::future::Future;
+use std::io::Error as IoError;
+use std::io::ErrorKind;
 use std::str::from_utf8;
 
 use http::request::Builder as HttpRequestBuilder;
@@ -15,11 +17,12 @@ use http::Request;
 use http::Response;
 use http_body_util::BodyExt;
 use http_body_util::Full;
+use http_body_util::LengthLimitError;
+use http_body_util::Limited;
 use http_endpoint::Endpoint;
 
 use hyper::body::Bytes;
 use hyper::body::Incoming;
-use hyper::Error as HyperError;
 #[cfg(feature = "tls-rustls")]
 use hyper_rustls::HttpsConnectorBuilder;
 #[cfg(feature = "tls-native")]
@@ -118,10 +121,13 @@ fn https_connector() -> HttpsConnectorType {
     .build()
 }
 
+const DEFAULT_MAX_RESPONSE_BYTES: usize = 100 * 1024 * 1024;
+
 /// A builder for creating customized `Client` objects.
 #[derive(Debug)]
 pub struct Builder {
   builder: HttpClientBuilder,
+  max_response_bytes: usize,
 }
 
 impl Builder {
@@ -132,12 +138,25 @@ impl Builder {
     self
   }
 
+  /// Adjust the maximum response size in bytes.
+  ///
+  /// Use a value of 0 to disable the limit.
+  #[inline]
+  pub fn max_response_bytes(&mut self, max_bytes: usize) -> &mut Self {
+    self.max_response_bytes = max_bytes;
+    self
+  }
+
   /// Build the final `Client` object.
   pub fn build(&self, api_info: ApiInfo) -> Client {
     let https = https_connector();
     let client = self.builder.build(https);
 
-    Client { api_info, client }
+    Client {
+      api_info,
+      client,
+      max_response_bytes: self.max_response_bytes,
+    }
   }
 }
 
@@ -155,7 +174,10 @@ impl Default for Builder {
     let mut builder = HttpClient::builder(TokioExecutor::new());
     let _ = builder.pool_max_idle_per_host(0);
 
-    Self { builder }
+    Self {
+      builder,
+      max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+    }
   }
 
   #[cfg(not(test))]
@@ -163,6 +185,7 @@ impl Default for Builder {
   fn default() -> Self {
     Self {
       builder: HttpClient::builder(TokioExecutor::new()),
+      max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
     }
   }
 }
@@ -173,6 +196,7 @@ impl Default for Builder {
 pub struct Client {
   api_info: ApiInfo,
   client: HttpClient<HttpsConnectorType, Full<Bytes>>,
+  max_response_bytes: usize,
 }
 
 impl Client {
@@ -233,7 +257,10 @@ impl Client {
     Ok(request)
   }
 
-  async fn retrieve_raw_body(response: Incoming) -> Result<Bytes, HyperError> {
+  async fn retrieve_raw_body<E>(
+    response: Incoming,
+    max_bytes: usize,
+  ) -> Result<Bytes, RequestError<E>> {
     // We unconditionally wait for the full body to be received
     // before even evaluating the header. That is mostly done for
     // simplicity and it shouldn't really matter anyway because most
@@ -243,18 +270,35 @@ impl Client {
     //       to cause trouble: when we receive, for example, the
     //       list of all orders it now needs to be stored in memory
     //       in its entirety. That may blow things.
-    let bytes = BodyExt::collect(response)
-      .await
-      // SANITY: The operation is infallible.
-      .unwrap()
-      .to_bytes();
+    let bytes = if max_bytes == 0 {
+      BodyExt::collect(response).await?.to_bytes()
+    } else {
+      let limited = Limited::new(response, max_bytes);
+      BodyExt::collect(limited)
+        .await
+        .map_err(|err| {
+          let io = if err.downcast_ref::<LengthLimitError>().is_some() {
+            IoError::new(
+              ErrorKind::InvalidData,
+              "response body exceeded configured limit",
+            )
+          } else {
+            IoError::new(ErrorKind::Other, err.to_string())
+          };
+          RequestError::Io(io)
+        })?
+        .to_bytes()
+    };
     Ok(bytes)
   }
 
   /// Retrieve the HTTP body, possible uncompressing it if it was gzip
   /// encoded.
   #[cfg(feature = "gzip")]
-  async fn retrieve_body<E>(response: Response<Incoming>) -> Result<Bytes, RequestError<E>> {
+  async fn retrieve_body<E>(
+    response: Response<Incoming>,
+    max_bytes: usize,
+  ) -> Result<Bytes, RequestError<E>> {
     use async_compression::futures::bufread::GzipDecoder;
     use futures::AsyncReadExt as _;
     use http::header::CONTENT_ENCODING;
@@ -262,11 +306,22 @@ impl Client {
     let (parts, body) = response.into_parts();
     let encoding = parts.headers.get(CONTENT_ENCODING);
 
-    let bytes = Self::retrieve_raw_body(body).await?;
+    let bytes = Self::retrieve_raw_body::<E>(body, max_bytes).await?;
     let bytes = match encoding {
       Some(value) if value == HeaderValue::from_static("gzip") => {
         let mut buffer = Vec::new();
-        let _count = GzipDecoder::new(&*bytes).read_to_end(&mut buffer).await?;
+        if max_bytes == 0 {
+          let _count = GzipDecoder::new(&*bytes).read_to_end(&mut buffer).await?;
+        } else {
+          let mut reader = GzipDecoder::new(&*bytes).take(max_bytes as u64 + 1);
+          let _count = reader.read_to_end(&mut buffer).await?;
+          if buffer.len() > max_bytes {
+            return Err(RequestError::Io(IoError::new(
+              ErrorKind::InvalidData,
+              "response body exceeded configured limit",
+            )));
+          }
+        }
         buffer.into()
       },
       _ => bytes,
@@ -277,8 +332,11 @@ impl Client {
 
   /// Retrieve the HTTP body.
   #[cfg(not(feature = "gzip"))]
-  async fn retrieve_body<E>(response: Response<Incoming>) -> Result<Bytes, RequestError<E>> {
-    let bytes = Self::retrieve_raw_body(response.into_body()).await?;
+  async fn retrieve_body<E>(
+    response: Response<Incoming>,
+    max_bytes: usize,
+  ) -> Result<Bytes, RequestError<E>> {
+    let bytes = Self::retrieve_raw_body::<E>(response.into_body(), max_bytes).await?;
     Ok(bytes)
   }
 
@@ -320,7 +378,7 @@ impl Client {
     debug!(status = debug(&status));
     trace!(response = debug(&result));
 
-    let bytes = Self::retrieve_body::<R::Error>(result).await?;
+    let bytes = Self::retrieve_body::<R::Error>(result, self.max_response_bytes).await?;
     let body = bytes.as_ref();
     match from_utf8(body) {
       Ok(s) => trace!(body = display(&s)),

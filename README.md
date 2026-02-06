@@ -61,8 +61,8 @@ Features
 --------
 
 - `gzip` (default) enables transparent gzip response decoding
-- `tls-native` (default) uses native system TLS (OpenSSL on many platforms)
-- `tls-rustls` uses a pure Rust TLS stack with `webpki-roots`
+- `tls-native` uses native system TLS (OpenSSL on many platforms)
+- `tls-rustls` (default) uses a pure Rust TLS stack with `webpki-roots`
 - `vendored-openssl` builds with vendored OpenSSL (implies `tls-native`)
 
 To pick a TLS backend explicitly, disable default features and enable

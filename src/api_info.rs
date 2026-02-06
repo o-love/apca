@@ -31,6 +31,16 @@ fn make_api_stream_url(base_url: Url) -> Result<Url, Error> {
   Ok(url)
 }
 
+fn ensure_scheme(url: &Url, scheme: &str, name: &str) -> Result<(), Error> {
+  if url.scheme() == scheme {
+    Ok(())
+  } else {
+    Err(Error::Str(
+      format!("{name} must use {scheme} scheme").into(),
+    ))
+  }
+}
+
 /// An object encapsulating the information used for working with the
 /// Alpaca API.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,7 +74,9 @@ impl ApiInfo {
     secret: impl ToString,
   ) -> Result<Self, Error> {
     let api_base_url = Url::parse(api_base_url.as_ref())?;
+    ensure_scheme(&api_base_url, "https", "api_base_url")?;
     let api_stream_url = make_api_stream_url(api_base_url.clone())?;
+    ensure_scheme(&api_stream_url, "wss", "api_stream_url")?;
 
     Ok(Self {
       api_base_url,
@@ -105,6 +117,7 @@ impl ApiInfo {
         Error::Str(format!("{ENV_API_BASE_URL} environment variable is not a valid string").into())
       })?;
     let api_base_url = Url::parse(&api_base_url)?;
+    ensure_scheme(&api_base_url, "https", ENV_API_BASE_URL)?;
 
     let api_stream_url = var_os(ENV_API_STREAM_URL)
       .map(Result::<_, Error>::Ok)
@@ -121,6 +134,7 @@ impl ApiInfo {
         )
       })?;
     let api_stream_url = Url::parse(&api_stream_url)?;
+    ensure_scheme(&api_stream_url, "wss", ENV_API_STREAM_URL)?;
 
     let key_id = var_os(ENV_KEY_ID)
       .ok_or_else(|| Error::Str(format!("{ENV_KEY_ID} environment variable not found").into()))?
